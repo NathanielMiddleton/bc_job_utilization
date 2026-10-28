@@ -1,0 +1,5 @@
+# Runs on the compute node before script.sh. OnDemand provides find_port and
+# create_passwd. The exported variables end up in connection.yml and are
+# available to view.html.erb as port and password.
+export port="$(find_port)"
+export password="$(create_passwd 32)"

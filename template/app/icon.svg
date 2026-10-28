@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Job Utilization: three resources, each a track (allocated) with a filled share (used).
+       The bottom bar is the one worth looking at, so it gets the warning color. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1F8290"/>
+      <stop offset="1" stop-color="#145C68"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="104" fill="url(#tile)"/>
+
+  <!-- tracks: allocated -->
+  <rect x="96"  y="136" width="320" height="56" rx="28" fill="#FFFFFF" fill-opacity="0.22"/>
+  <rect x="96"  y="228" width="320" height="56" rx="28" fill="#FFFFFF" fill-opacity="0.22"/>
+  <rect x="96"  y="320" width="320" height="56" rx="28" fill="#FFFFFF" fill-opacity="0.22"/>
+
+  <!-- fills: used -->
+  <rect x="96"  y="136" width="282" height="56" rx="28" fill="#FFFFFF"/>
+  <rect x="96"  y="228" width="192" height="56" rx="28" fill="#FFFFFF"/>
+  <rect x="96"  y="320" width="104" height="56" rx="28" fill="#F2B544"/>
+</svg>

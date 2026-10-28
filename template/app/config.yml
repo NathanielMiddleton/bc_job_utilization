@@ -1,0 +1,43 @@
+# Job Utilization — site configuration.
+# Every key is optional; defaults are in jobutil/config.py.
+
+# Shown in the page header.
+cluster_name: ""
+
+# Pass this cluster name to sacct/sreport/sinfo as -M (multi-cluster slurmdbd).
+# Leave empty to use the default cluster.
+cluster:
+
+# Full paths if the Slurm binaries are not on the PUN's PATH.
+sacct: sacct
+sreport: sreport
+sinfo: sinfo
+
+# Seconds to wait for a Slurm command before giving up.
+command_timeout: 120
+
+# Default window length when the page opens.
+default_hours: 24
+
+# Longest custom range the UI may request (protects slurmdbd).
+max_days: 92
+
+# Summary statistics always use every job; only the job table is capped.
+max_jobs_in_table: 2000
+
+# Set to false to hide the "everyone" and "partition" scopes entirely.
+# Note: even when true, sacct only returns other users' jobs if slurmdbd's
+# PrivateData setting allows it (or the user is an operator/admin).
+allow_all_users: true
+
+# Link back to the OnDemand dashboard.
+dashboard_url: /pun/sys/dashboard
+
+# TRES the cluster-wide capacity panel asks sreport about. Typed GPUs such as
+# gres/gpu:h200 only work when slurm.conf's AccountingStorageTRES includes
+# them; otherwise they are skipped with a note.
+cluster_tres: [cpu, gres/gpu]
+
+# Optimization hints derived from the results ("request fewer cores", idle
+# GPUs, time limits...). Thresholds live in jobutil/advice.py.
+hints: true

@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+"""Fake sacct for local development: serves tests/fixtures/sacct_sample.txt.
+Honours -u <user> (keeps that user's jobs and their steps) and ignores the rest."""
+import os, sys
+from datetime import datetime
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from helpers import render_fixture
+
+user = None
+if "-u" in sys.argv:
+    user = sys.argv[sys.argv.index("-u") + 1]
+keep = None
+for line in render_fixture("sacct_sample.txt", datetime.now().replace(microsecond=0)).splitlines():
+    cols = line.split("|")
+    if "." not in cols[0]:
+        keep = (user is None or cols[2] == user)
+    if keep:
+        print(line)

@@ -1,0 +1,10 @@
+---
+batch_connect:
+  template: basic
+script:
+  # One core and a little memory is plenty; sacct/sreport do the heavy lifting
+  # inside slurmdbd. Adjust for your scheduler if it is not Slurm.
+  native:
+    - "--ntasks=1"
+    - "--cpus-per-task=1"
+    - "--mem=2G"

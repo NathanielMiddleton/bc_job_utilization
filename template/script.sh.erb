@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -o pipefail
+
+<%- unless context.modules.to_s.strip.empty? -%>
+module purge
+module load <%= context.modules %>
+<%- end -%>
+
+command -v python3 >/dev/null 2>&1 || { echo "python3 not found on $(hostname); set 'Modules to load' in the form." >&2; exit 1; }
+command -v sacct   >/dev/null 2>&1 || { echo "sacct not found on $(hostname); the Slurm client tools must be on the PATH." >&2; exit 1; }
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' || { echo "python3 is older than 3.8." >&2; exit 1; }
+
+host="${host:-$(hostname)}"
+
+# Token checked by POST /login; the session card posts it for the owner only.
+export JOBUTIL_TOKEN="${password}"
+# OnDemand's /node proxy keeps this prefix on every request.
+export JOBUTIL_URL_PREFIX="/node/${host}/${port}"
+
+cd "${PWD}/app"
+echo "Starting Job Utilization on ${host}:${port}"
+exec python3 server.py --host 0.0.0.0 --port "${port}"

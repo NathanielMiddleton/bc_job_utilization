@@ -1,0 +1,5 @@
+---
+name: Job Utilization
+description: Shows how efficiently your Slurm jobs used the CPUs, memory and GPUs they were allocated and how much they consumed, for your own jobs, a partition or the whole cluster, with hints on how to tune job requests.
+category: Reports
+subcategory: Slurm

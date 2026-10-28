@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Utilization$title_suffix</title>
+<link rel="stylesheet" href="${base}static/app.css">
+<!-- Chart.js is loaded from a CDN by the browser; the page still works (tables only)
+     if it is blocked. To vendor it, download chart.umd.js into static/ and point here. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+</head>
+<body data-base="$base" data-user="$user" data-default-hours="$default_hours"
+      data-max-days="$max_days" data-allow-all="$allow_all">
+
+<header class="masthead">
+  <div>
+    <a class="back" href="$dashboard_url">Back to OnDemand</a>
+    <h1>Job Utilization$cluster_badge</h1>
+  </div>
+  <div class="who">Signed in as <strong>$user</strong></div>
+</header>
+
+<!-- The query, written as a sentence. Each blank is a control. -->
+<form class="query" id="query" autocomplete="off">
+  <span>Show</span>
+  <select name="states" aria-label="Which jobs">
+    <option value="finished">all finished</option>
+    <option value="completed">only successfully completed</option>
+    <option value="unsuccessful">only failed, timed-out or cancelled</option>
+  </select>
+  <span>jobs for</span>
+  <select name="scope" aria-label="Whose jobs">$scope_options</select>
+  <select name="partition" aria-label="Partition" hidden><option value="">loading…</option></select>
+  <span>that</span>
+  <select name="mode" aria-label="How jobs are attributed to the window">
+    <option value="ended">ended in</option>
+    <option value="prorate">ran during</option>
+  </select>
+  <select name="range" aria-label="Time range">
+    <option value="1">the last hour</option>
+    <option value="6">the last 6 hours</option>
+    <option value="24" selected>the last 24 hours</option>
+    <option value="168">the last 7 days</option>
+    <option value="720">the last 30 days</option>
+    <option value="custom">a custom range</option>
+  </select>
+  <span class="custom" hidden>
+    from <input type="datetime-local" name="start" aria-label="Start"> to <input type="datetime-local" name="end" aria-label="End">
+  </span>
+  <label class="running" hidden><input type="checkbox" name="running" value="1"> include running jobs</label>
+  <button type="submit" id="go">Update</button>
+</form>
+
+<p class="modehelp" id="modehelp"></p>
+
+<section id="status" class="status" hidden></section>
+
+<main id="results" hidden>
+  <section class="notes" id="notes"></section>
+
+  <!-- Resource ledger: for each resource, what was allocated and how much was used -->
+  <section class="ledger" id="ledger"></section>
+
+  <!-- Optimization hints derived from the results -->
+  <section class="advice" id="advice"></section>
+
+  <section class="charts">
+    <figure>
+      <figcaption>CPU efficiency per job <small>click a bar to see which jobs</small></figcaption>
+      <canvas id="chart-cpu" height="150"></canvas>
+    </figure>
+    <figure>
+      <figcaption>Memory efficiency per job <small>peaks above the allocation land in 90–100%</small></figcaption>
+      <canvas id="chart-mem" height="150"></canvas>
+    </figure>
+    <figure>
+      <figcaption>CPU-hours by partition: used vs idle</figcaption>
+      <canvas id="chart-part" height="150"></canvas>
+    </figure>
+  </section>
+
+  <section class="breakdowns">
+    <div id="by-partition"></div>
+    <div id="by-user"></div>
+    <div id="by-account"></div>
+    <div id="by-gpu-type"></div>
+  </section>
+
+  <section class="cluster" id="cluster"></section>
+
+  <section class="jobs">
+    <div class="jobs-head">
+      <h2 id="jobs-title">Jobs</h2>
+      <div id="drill" class="drill"></div>
+      <input type="search" id="filter" placeholder="Filter by id, name, user, partition, state or hint">
+    </div>
+    <div class="scroller">
+      <table id="jobs-table">
+        <thead><tr id="jobs-header"></tr></thead>
+        <tbody id="jobs-body"></tbody>
+      </table>
+    </div>
+    <p class="legend">
+      <span class="flag flag-day">multi-day</span> ran longer than 24 h &nbsp;
+      <span class="flag flag-start">began earlier</span> started before the window &nbsp;
+      <span class="flag flag-end">ends later</span> finished after the window or still running &nbsp;
+      <span class="flag flag-pro">prorated</span> only the in-window share is counted
+    </p>
+  </section>
+</main>
+
+<script src="${base}static/app.js"></script>
+</body>
+</html>

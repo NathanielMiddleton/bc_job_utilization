@@ -1,0 +1,26 @@
+---
+# Replace with the cluster id from /etc/ood/config/clusters.d/<id>.yml.
+cluster: "my_cluster"
+
+attributes:
+  modules:
+    widget: text_field
+    label: "Modules to load"
+    value: ""
+    help: |
+      Space-separated modules that put `python3` (3.8 or newer) and the Slurm
+      client commands on the PATH, for example `python/3.11`. Leave blank if
+      they are already available on compute nodes by default.
+  bc_num_hours:
+    label: "Hours to keep the dashboard running"
+    value: 2
+    min: 1
+    max: 12
+  bc_queue:
+    label: "Partition"
+    help: "A debug or short-jobs partition is ideal; the dashboard needs one core."
+
+form:
+  - modules
+  - bc_queue
+  - bc_num_hours

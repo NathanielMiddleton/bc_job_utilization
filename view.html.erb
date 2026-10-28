@@ -1,0 +1,8 @@
+<%# The /node proxy requires OnDemand login but not ownership of this session,
+    so the token is posted here and exchanged for a cookie by the app. %>
+<form action="/node/<%= host %>/<%= port %>/login" method="post" target="_blank">
+  <input type="hidden" name="token" value="<%= password %>">
+  <button class="btn btn-primary" type="submit">
+    <i class="fa fa-chart-bar"></i> Open Job Utilization
+  </button>
+</form>
