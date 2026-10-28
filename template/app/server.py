@@ -37,7 +37,10 @@ from urllib.parse import parse_qs
 from wsgiref.simple_server import WSGIServer, make_server
 from socketserver import ThreadingMixIn
 
-from jobutil import advice, config, metrics, slurm
+import threading
+import time
+
+from jobutil import advice, capacity, config, metrics, slurm
 
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(APP_ROOT, "static")
@@ -243,6 +246,7 @@ def api_jobs(req):
     jobs, info = metrics.select_jobs(all_jobs, start, end, mode,
                                      metrics.STATE_PRESETS[preset], include_running, now)
     warnings = _build_warnings(scope, mode, jobs, info, all_jobs, start, end, now)
+    gpu_capacity = _gpu_capacity(scope, partition, all_jobs, start, end, now, warnings)
     summary = metrics.summarize(jobs)
     jobs_sorted = sorted(jobs, key=lambda j: j.end or now, reverse=True)
     cap = CFG["max_jobs_in_table"]
@@ -266,9 +270,66 @@ def api_jobs(req):
         "jobs": records,
         "advice": advice.advise(jobs, scope, by_user) if CFG["hints"] else [],
         "gpu_util_diagnosis": metrics.gpu_util_diagnosis(jobs),
+        "gpu_capacity": gpu_capacity,
         "table_truncated": len(jobs) > cap,
         "warnings": warnings,
     })
+
+
+def _gpu_capacity(scope, partition, all_jobs, start, end, now, warnings):
+    """GPU-hours held by jobs in the window against the GPU-hours that existed.
+
+    Capacity = GPUs configured (sinfo) x hours in the window, for the whole
+    cluster or for the chosen partition. The numerator comes from every job
+    that held GPUs during the window, not just the ones selected above, so
+    running jobs count for the hours they have used so far.
+    """
+    occ = metrics.gpu_occupancy(all_jobs, start, end, now)
+    nodes = _cached(("nodes", CFG["cluster"]), 120, lambda: slurm.node_inventory(CFG, CFG["cluster"]))
+    inv = slurm.gpu_inventory(CFG, CFG["cluster"], nodes=nodes)
+    hours = (min(end, now) - start).total_seconds() / 3600
+    if hours <= 0 or not occ["jobs"] and not (inv and inv["total"]):
+        return None
+    if inv is None:
+        if CFG.get("gpu_total"):
+            inv = {"total": {"": int(CFG["gpu_total"])}, "partitions": {}, "nodes": None}
+            source = "config"
+        else:
+            warnings.append("GPU occupancy cannot be computed because sinfo did not answer and no gpu_total is "
+                            "set in config.yml; GPU-hours held by jobs are still shown.")
+            return {"occupied_gpu_hours": occ["gpu_hours"], "occupied_by_type": occ["by_type"],
+                    "jobs": occ["jobs"], "available_gpu_hours": None, "ratio": None, "by_type": {}, "scope": None}
+    else:
+        source = "sinfo"
+    if scope == "partition" and partition:
+        gpus = inv["partitions"].get(partition, {})
+        label = f"partition {partition}"
+        if not gpus:
+            warnings.append(f"sinfo lists no GPUs in partition {partition}, so GPU occupancy is measured against the "
+                            f"whole cluster's GPUs instead.")
+            gpus, label = inv["total"], "the cluster"
+    else:
+        gpus, label = inv["total"], "the cluster"
+    total_gpus = sum(gpus.values())
+    available = total_gpus * hours
+    by_type = {}
+    for t in sorted(set(gpus) | set(occ["by_type"])):
+        cap = gpus.get(t, 0) * hours
+        held = occ["by_type"].get(t, 0.0)
+        by_type[t or "untyped"] = {"gpus": gpus.get(t, 0), "available": cap, "occupied": held,
+                                  "ratio": (held / cap) if cap else None}
+    ratio = (occ["gpu_hours"] / available) if available else None
+    if ratio is not None and ratio > 1.02:
+        warnings.append(f"Jobs held {occ['gpu_hours']:,.0f} GPU-hours but sinfo only accounts for "
+                        f"{available:,.0f} in this window ({total_gpus} GPUs). Either GPUs were removed from the "
+                        f"cluster since those jobs ran, or jobs were oversubscribed; the ratio is shown as reported.")
+    if source == "sinfo":
+        warnings.append("GPU occupancy is measured against the GPUs sinfo lists right now times the hours in the "
+                        "window. It does not subtract GPUs that were down or drained during the window; the "
+                        "cluster-wide panel from sreport does, where gres/gpu is tracked.")
+    return {"occupied_gpu_hours": occ["gpu_hours"], "occupied_by_type": occ["by_type"], "jobs": occ["jobs"],
+            "available_gpu_hours": available, "gpus": total_gpus, "hours": hours, "ratio": ratio,
+            "by_type": by_type, "scope": label, "source": source}
 
 
 def _build_warnings(scope, mode, jobs, info, all_jobs, start, end, now):
@@ -379,6 +440,72 @@ def api_cluster(req):
     return json_response(out)
 
 
+_cache = {}
+_cache_lock = threading.Lock()
+
+
+def _cached(key, ttl, fn):
+    """Memoise expensive Slurm queries briefly so clicking around the capacity panel is cheap."""
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    value = fn()
+    with _cache_lock:
+        _cache[key] = (now + ttl, value)
+        if len(_cache) > 64:
+            for k in sorted(_cache, key=lambda k: _cache[k][0])[:32]:
+                _cache.pop(k, None)
+    return value
+
+
+def api_capacity_breakdown(req):
+    """Behind a segment of the cluster-wide bars: who/what the hours belong to."""
+    try:
+        start, end, now = _parse_window(req.args)
+    except BadRequest as e:
+        return error(e, HTTPStatus.BAD_REQUEST)
+    tres = req.args.get("tres", "cpu")
+    if tres != "cpu" and not tres.startswith("gres/gpu"):
+        return error("tres must be cpu or gres/gpu[:type].", HTTPStatus.BAD_REQUEST)
+    gpu_type = tres.split(":", 1)[1].lower() if ":" in tres else None
+
+    key = ("sacct_all", start.isoformat(), end.isoformat(), CFG["cluster"])
+    try:
+        rows = _cached(key, 120, lambda: slurm.sacct(CFG, start, end, all_users=True, cluster=CFG["cluster"]))
+    except slurm.SlurmError as e:
+        return error(e, HTTPStatus.BAD_GATEWAY)
+    jobs = metrics.build_jobs(rows)
+    nodes = _cached(("nodes", CFG["cluster"]), 120, lambda: slurm.node_inventory(CFG, CFG["cluster"]))
+    if gpu_type:
+        # A typed TRES bar: restrict to jobs and nodes of that GPU type.
+        nodes = [n for n in (nodes or []) if gpu_type in n["gpus"]]
+        jobs = [j for j in jobs if gpu_type in j.gpu_types]
+    bd = capacity.breakdown(nodes, jobs, start, end, "gres/gpu" if gpu_type else tres, now)
+    res = _cached(("reservations", CFG["cluster"]), 120, lambda: slurm.reservations(CFG, CFG["cluster"]))
+
+    warnings = []
+    me = getpass.getuser()
+    users = {j.user for j in jobs}
+    if users and users <= {me}:
+        warnings.append("Only your own jobs came back from sacct, so the allocated hours here cover just your jobs "
+                        "while the capacity covers the whole cluster (slurmdbd PrivateData).")
+    if nodes is None:
+        warnings.append("sinfo did not answer, so capacity, idle and down figures are unavailable; allocated hours "
+                        "by partition, user and account are still shown.")
+    warnings.append("These breakdowns join job records to today's node inventory, so they differ slightly from the "
+                    "sreport totals above: sreport uses hourly roll-ups and subtracts historical downtime, this uses "
+                    "exact job times and the nodes as they are configured now. Down nodes and reservations are "
+                    "current, not historical.")
+    return json_response({
+        "window": {"start": start.isoformat(), "end": end.isoformat()}, "tres": tres,
+        "hours": bd["hours"], "total_capacity": bd["total_capacity"], "total_allocated": bd["total_allocated"],
+        "groups": bd["groups"], "down_nodes": capacity.down_nodes(nodes, "gres/gpu" if gpu_type else tres),
+        "reservations": res, "warnings": warnings,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -404,6 +531,8 @@ def handle(req):
         return api_cluster(req)
     if path == "/api/partitions":
         return api_partitions(req)
+    if path == "/api/capacity_breakdown":
+        return api_capacity_breakdown(req)
     return Response("Not found", HTTPStatus.NOT_FOUND, "text/plain")
 
 

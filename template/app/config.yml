@@ -12,6 +12,7 @@ cluster:
 sacct: sacct
 sreport: sreport
 sinfo: sinfo
+scontrol: scontrol
 
 # Seconds to wait for a Slurm command before giving up.
 command_timeout: 120
@@ -41,3 +42,8 @@ cluster_tres: [cpu, gres/gpu]
 # Optimization hints derived from the results ("request fewer cores", idle
 # GPUs, time limits...). Thresholds live in jobutil/advice.py.
 hints: true
+
+# GPU occupancy (GPU-hours held by jobs / GPU-hours available) normally takes
+# the GPU count from sinfo. Set a number here only if sinfo is unavailable
+# where the app runs.
+gpu_total:

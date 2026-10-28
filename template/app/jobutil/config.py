@@ -14,6 +14,7 @@ DEFAULTS = {
     "sacct": "sacct",
     "sreport": "sreport",
     "sinfo": "sinfo",
+    "scontrol": "scontrol",
     "command_timeout": 120,      # seconds
     "default_hours": 24,
     "max_days": 92,              # longest custom range the UI may request
@@ -24,6 +25,7 @@ DEFAULTS = {
     # (e.g. gres/gpu:h200) when slurm.conf's AccountingStorageTRES tracks them.
     "cluster_tres": ["cpu", "gres/gpu"],
     "hints": True,               # show optimization hints (jobutil/advice.py)
+    "gpu_total": None,           # override: total GPUs for occupancy when sinfo is unavailable
 }
 
 

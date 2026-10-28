@@ -1,2 +1,15 @@
 #!/usr/bin/env bash
-printf 'cpu\ngpu\ndebug\ncpu\n'
+# Fake sinfo for local development. `-N` lists node|partitions|gres|features|cpus|mem|state|reason.
+if [[ " $* " == *" -N "* ]]; then
+  cat << 'EOT'
+gpu01|gpu*|gpu:a100:4|a100,ib,epyc|64|512000|mixed|none
+gpu02|gpu*|gpu:a100:4|a100,ib,epyc|64|512000|drained|GPU xid errors
+gpu03|gpu|gpu:h200:1|h200,ib|32|256000|idle|none
+gpu03|debug|gpu:h200:1|h200,ib|32|256000|idle|none
+cpu01|cpu|(null)|epyc,ib|128|512000|allocated|none
+cpu02|cpu|(null)|epyc|128|512000|idle|none
+cpu03|cpu|(null)|epyc|128|512000|down|Not responding
+EOT
+else
+  printf 'cpu\ngpu\ndebug\ncpu\n'
+fi

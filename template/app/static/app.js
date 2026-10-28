@@ -187,12 +187,26 @@
           ? `${s.mem_jobs_measured} of ${s.jobs} jobs measured · mean ${fmt.pct(s.mem_eff_mean)}` + (s.mem_jobs_over ? ` · ${s.mem_jobs_over} over allocation, capped` : "")
           : "no measurements"),
     ];
-    if (s.gpu_jobs) {
-      const diag = data.gpu_util_diagnosis;
-      rows.push(ledgerRow("GPU", "reported device utilization", s.gpu_util_weighted == null ? null : s.gpu_util_weighted / 100,
-        s.gpu_util_jobs ? `${s.gpu_util_jobs} of ${s.gpu_jobs} GPU jobs report utilization`
-                        : `Slurm recorded no gres/gpuutil for any of these jobs${diag ? " — see the notes above for why" : ""}`,
-        "", `${fmt.hours(s.gpu_hours)} GPU-hours across ${s.gpu_jobs} jobs` + gpuTypeText(s.gpu_hours_by_type)));
+    const cap = data.gpu_capacity;
+    if (cap && (cap.jobs || cap.available_gpu_hours)) {
+      const who = w.scope === "mine" ? "your jobs" : w.scope === "partition" ? "jobs in this partition" : "all jobs";
+      const types = Object.entries(cap.by_type || {})
+        .filter(([t, v]) => v.occupied || v.gpus)
+        .map(([t, v]) => v.available ? `${t} ${fmt.hours(v.occupied)} of ${fmt.hours(v.available)} h (${fmt.pct(v.ratio)})` : `${t} ${fmt.hours(v.occupied)} h`)
+        .join(" · ");
+      rows.push(ledgerRow("GPU occupancy", `GPU-hours held by ${who} vs GPU-hours that existed`, cap.ratio,
+        `${fmt.hours(cap.occupied_gpu_hours)} GPU-hours held by ${cap.jobs} jobs (running jobs included)`,
+        cap.available_gpu_hours != null ? `${fmt.hours(cap.available_gpu_hours)} available in ${esc(cap.scope)} (${cap.gpus} GPUs × ${fmt.hours(cap.hours)} h)` : "",
+        types || (cap.available_gpu_hours == null ? "no GPU inventory from sinfo" : "")));
+    }
+    if (s.gpu_jobs && s.gpu_util_jobs) {
+      rows.push(ledgerRow("GPU device utilization", "gres/gpuutil averaged over the job", s.gpu_util_weighted / 100,
+        `${s.gpu_util_jobs} of ${s.gpu_jobs} GPU jobs report it`, "",
+        `${fmt.hours(s.gpu_hours)} GPU-hours in selected jobs` + gpuTypeText(s.gpu_hours_by_type)));
+    } else if (s.gpu_jobs) {
+      rows.push(ledgerRow("GPU device utilization", "gres/gpuutil averaged over the job", null,
+        `Slurm recorded no gres/gpuutil for any of these jobs${data.gpu_util_diagnosis ? " — the notes above say why" : ""}`, "",
+        `${fmt.hours(s.gpu_hours)} GPU-hours in selected jobs` + gpuTypeText(s.gpu_hours_by_type)));
     }
     rows.push(ledgerRow("Wall time", "run time vs time limit", s.wall_eff_weighted,
       "run time", "requested limit",
@@ -440,27 +454,96 @@
   }
 
   // ---------- cluster capacity ----------
+  const SEGMENTS = [["allocated", "allocated"], ["idle", "idle"], ["planned", "planned/reserved"], ["down", "down"]];
+  const DIM_LABELS = { partition: "Partition", gpu_type: "GPU type", feature: "Node features", user: "User", account: "Account" };
+  let capOpen = null;            // { tres, segment, dim }
+  const breakdownCache = {};     // tres -> promise of /api/capacity_breakdown
+
+  function fetchBreakdown(tres) {
+    if (!breakdownCache[tres]) {
+      breakdownCache[tres] = fetch(BASE + "api/capacity_breakdown?" + queryString({ tres })).then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || `Request failed (${r.status}).`);
+        return d;
+      });
+      breakdownCache[tres].catch(() => { delete breakdownCache[tres]; });
+    }
+    return breakdownCache[tres];
+  }
+
+  function unitOf(tres) { return tres === "cpu" ? "CPU" : tres.startsWith("gres/gpu:") ? tres.slice("gres/gpu:".length).toUpperCase() + " GPU" : "GPU"; }
+
   function renderCluster(data) {
     if (!data || data.error) {
       els.cluster.innerHTML = `<div class="card"><h3>Cluster-wide capacity</h3><p class="note">${esc(data && data.error ? data.error : "Not available.")}</p></div>`;
       return;
     }
-    const blocks = data.tres.map((t) => {
+    const blocks = data.tres.map((t, ti) => {
       const total = t.reported || 1;
-      const seg = (n, cls) => `<i class="seg-${cls}" style="width:${(n / total * 100).toFixed(2)}%" title="${cls}: ${fmt.hours(n / 3600)} ${t.tres}-hours"></i>`;
-      const unit = t.tres === "cpu" ? "CPU" : t.tres.startsWith("gres/gpu:") ? t.tres.slice("gres/gpu:".length).toUpperCase() + " GPU" : "GPU";
-      return `<div class="tres">
+      const vals = { allocated: t.allocated, idle: t.idle, planned: t.planned, down: t.down + t.planned_down };
+      const unit = unitOf(t.tres);
+      const seg = (name) => `<i class="seg-${name}" role="button" tabindex="0" data-tres="${esc(t.tres)}" data-seg="${name}" style="width:${(vals[name] / total * 100).toFixed(2)}%" title="${name}: ${fmt.hours(vals[name] / 3600)} ${unit}-hours — click for a breakdown"></i>`;
+      return `<div class="tres" data-tres="${esc(t.tres)}">
         <div><b>${esc(t.cluster || "cluster")}</b> · ${unit}: <b>${fmt.pct(t.utilization, 1)}</b> of ${fmt.hours(t.reported / 3600)} ${unit}-hours were allocated to jobs</div>
-        <div class="stack" role="img" aria-label="${unit} capacity split">${seg(t.allocated, "allocated")}${seg(t.idle, "idle")}${seg(t.planned, "planned")}${seg(t.down + t.planned_down, "down")}</div>
-        <div class="key">
-          <span><i class="seg-allocated"></i>allocated ${fmt.hours(t.allocated / 3600)}</span>
-          <span><i class="seg-idle"></i>idle ${fmt.hours(t.idle / 3600)}</span>
-          <span><i class="seg-planned"></i>planned/reserved ${fmt.hours(t.planned / 3600)}</span>
-          <span><i class="seg-down"></i>down ${fmt.hours((t.down + t.planned_down) / 3600)}</span>
-        </div>
+        <div class="stack" role="group" aria-label="${unit} capacity split; click a segment for a breakdown">${SEGMENTS.map(([n]) => seg(n)).join("")}</div>
+        <div class="key">${SEGMENTS.map(([n, label]) => `<span data-tres="${esc(t.tres)}" data-seg="${n}" role="button" tabindex="0"><i class="seg-${n}"></i>${label} ${fmt.hours(vals[n] / 3600)}</span>`).join("")}</div>
+        <div class="drawer" id="drawer-${ti}"></div>
       </div>`;
     });
-    els.cluster.innerHTML = `<div class="card"><h3>Cluster-wide capacity</h3>${blocks.join("") || ""}${data.warnings.map((w) => `<p class="note">${esc(w)}</p>`).join("")}</div>`;
+    els.cluster.innerHTML = `<div class="card"><h3>Cluster-wide capacity</h3>${blocks.join("")}${data.warnings.map((w) => `<p class="note">${esc(w)}</p>`).join("")}<p class="note">Click any segment of a bar to see which partitions, GPU types, node features, users and accounts the hours belong to.</p></div>`;
+    els.cluster.querySelectorAll("[data-seg]").forEach((el) => {
+      const open = () => toggleDrawer(el.dataset.tres, el.dataset.seg);
+      el.addEventListener("click", open);
+      el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+    });
+  }
+
+  function toggleDrawer(tres, segment) {
+    const same = capOpen && capOpen.tres === tres && capOpen.segment === segment;
+    capOpen = same ? null : { tres, segment, dim: (capOpen && capOpen.tres === tres && capOpen.dim) || (tres === "cpu" ? "partition" : "gpu_type") };
+    els.cluster.querySelectorAll(".seg-selected").forEach((i) => i.classList.remove("seg-selected"));
+    els.cluster.querySelectorAll(".drawer").forEach((d) => { d.innerHTML = ""; });
+    if (!capOpen) return;
+    els.cluster.querySelectorAll(`.stack [data-tres="${CSS.escape(tres)}"][data-seg="${segment}"]`).forEach((i) => i.classList.add("seg-selected"));
+    const drawer = els.cluster.querySelector(`.tres[data-tres="${CSS.escape(tres)}"] .drawer`);
+    drawer.innerHTML = `<p class="note">Loading breakdown…</p>`;
+    fetchBreakdown(tres).then((bd) => { if (capOpen && capOpen.tres === tres) renderDrawer(drawer, bd); })
+      .catch((e) => { drawer.innerHTML = `<p class="note">Could not load the breakdown: ${esc(e.message)}</p>`; });
+  }
+
+  function renderDrawer(drawer, bd) {
+    const { tres, segment, dim } = capOpen;
+    const unit = unitOf(tres);
+    const name = SEGMENTS.find(([n]) => n === segment)[1];
+    let body = "";
+    if (segment === "down") {
+      body = bd.down_nodes.length
+        ? `<table><thead><tr><th>Node</th><th>State</th><th>Reason</th><th class="num">${tres === "cpu" ? "Cores" : "GPUs"}</th><th>Partitions</th><th>Features</th></tr></thead>
+           <tbody>${bd.down_nodes.map((n) => `<tr><td>${esc(n.name)}</td><td>${esc(n.state)}</td><td class="wrap">${esc(n.reason) || "—"}</td><td class="num">${tres === "cpu" ? n.cpus : `${n.gpus}${Object.keys(n.gpu_types).length ? " (" + Object.entries(n.gpu_types).map(([t, c]) => `${t} ×${c}`).join(", ") + ")" : ""}`}</td><td>${esc(n.partitions.join(", "))}</td><td>${esc(n.features.join(", ")) || "—"}</td></tr>`).join("")}</tbody></table>
+           <p class="note">Nodes that are down or drained right now. The bar's down figure is historical (sreport); a node that was down earlier in the window but is back will not appear here.</p>`
+        : `<p class="note">No node is down or drained at the moment. The bar's down figure comes from sreport's history for the window.</p>`;
+    } else if (segment === "planned") {
+      body = bd.reservations.length
+        ? `<table><thead><tr><th>Reservation</th><th>Start</th><th>End</th><th>Nodes</th><th class="num">Cores</th><th>TRES</th><th>Users / accounts</th><th>Flags</th></tr></thead>
+           <tbody>${bd.reservations.map((r) => `<tr><td>${esc(r.name)}</td><td>${fmt.time(r.start)}</td><td>${fmt.time(r.end)}</td><td class="wrap">${esc(r.nodes)}</td><td class="num">${r.cores || "—"}</td><td class="wrap">${esc(r.tres) || "—"}</td><td class="wrap">${esc([r.users, r.accounts].filter((x) => x && x !== "(null)").join(" / ")) || "—"}</td><td class="wrap">${esc(r.flags) || "—"}</td></tr>`).join("")}</tbody></table>
+           <p class="note">Current and upcoming reservations from scontrol. sreport's planned figure also includes time nodes were held idle for backfill of large jobs, which has no reservation record.</p>`
+        : `<p class="note">No reservations are defined right now. sreport's planned figure also counts nodes held idle while the scheduler assembled a large job, which leaves no record to list.</p>`;
+    } else {
+      const rows = (bd.groups[dim] || []).filter((g) => (segment === "allocated" ? g.allocated > 0 : (g.idle || 0) > 0 || g.capacity));
+      const value = (g) => (segment === "allocated" ? g.allocated : g.idle);
+      const total = rows.reduce((a, g) => a + (value(g) || 0), 0) || 1;
+      const hasCap = rows.some((g) => g.capacity != null);
+      const tabs = Object.keys(DIM_LABELS).filter((d) => segment === "allocated" || ["partition", "gpu_type", "feature"].includes(d))
+        .map((d) => `<button type="button" class="tab ${d === dim ? "active" : ""}" data-dim="${d}">${DIM_LABELS[d]}</button>`).join("");
+      body = `<div class="tabs" role="tablist">${tabs}</div>` + (rows.length
+        ? `<table><thead><tr><th>${DIM_LABELS[dim]}</th><th class="num">${name} ${unit}-h</th><th class="num">Share</th>${hasCap ? `<th class="num">Capacity ${unit}-h</th><th class="num">Used of capacity</th>` : ""}<th class="num">Jobs</th><th class="bar"></th></tr></thead>
+           <tbody>${rows.map((g) => `<tr><td>${esc(g.name)}</td><td class="num">${fmt.hours(value(g))}</td><td class="num">${fmt.pct(value(g) / total)}</td>${hasCap ? `<td class="num">${g.capacity != null ? fmt.hours(g.capacity) : "—"}</td><td class="num">${g.ratio != null ? effCell(g.ratio) : "—"}</td>` : ""}<td class="num">${g.jobs || "—"}</td><td class="bar"><i style="width:${(value(g) / total * 100).toFixed(1)}%"></i></td></tr>`).join("")}</tbody></table>`
+        : `<p class="note">Nothing to show for this view.</p>`);
+      body += `<p class="note">${fmt.hours(bd.total_allocated)} of ${fmt.hours(bd.total_capacity)} ${unit}-hours allocated by this method over ${fmt.hours(bd.hours)} h${dim === "feature" ? "; a node is grouped by its full feature set, and multi-node jobs are split evenly across their nodes" : ""}${dim === "gpu_type" && tres === "cpu" ? "; for CPUs this view means cores on nodes carrying that GPU type" : ""}.</p>`;
+    }
+    drawer.innerHTML = `<div class="drawer-head"><b>${unit} ${name}</b> — breakdown <button type="button" class="close" aria-label="Close breakdown">✕</button></div>${body}${bd.warnings.map((w) => `<p class="note">${esc(w)}</p>`).join("")}`;
+    drawer.querySelector(".close").addEventListener("click", () => toggleDrawer(tres, segment));
+    drawer.querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => { capOpen.dim = b.dataset.dim; renderDrawer(drawer, bd); }));
   }
 
   // ---------- main ----------
@@ -480,6 +563,8 @@
       if (!r.ok) throw new Error(data.error || `Request failed (${r.status}).`);
       data.jobs.forEach((j) => { j.hint_text = (j.hints || []).map((h) => h.code).join(", "); });
       drill = null;
+      capOpen = null;
+      Object.keys(breakdownCache).forEach((k) => delete breakdownCache[k]);
       lastData = data;
       hideStatus();
       els.results.hidden = false;

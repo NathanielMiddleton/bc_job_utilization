@@ -208,3 +208,21 @@ table.drillable tbody tr.selected { background: color-mix(in srgb, var(--used) 1
 .notes details.raw td { white-space: normal; word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .notes details.raw p { color: var(--muted); font-size: .85rem; margin: 8px 0 0; }
 .notes details.raw code { font-size: .85em; }
+
+/* Cluster capacity drill-down */
+.cluster .stack > i { cursor: pointer; transition: filter .15s; }
+.cluster .stack > i:hover, .cluster .stack > i:focus-visible { filter: brightness(1.15); }
+.cluster .stack > i.seg-selected { outline: 3px solid var(--ink); outline-offset: -3px; }
+.cluster .key span[role="button"] { cursor: pointer; }
+.cluster .key span[role="button"]:hover { color: var(--ink); text-decoration: underline; }
+.cluster .drawer:empty { display: none; }
+.cluster .drawer { margin-top: 12px; padding: 12px 14px; background: var(--bg); border-radius: var(--radius); }
+.cluster .drawer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.cluster .drawer-head .close { font: inherit; border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 2px 6px; }
+.cluster .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.cluster .tab { font: inherit; font-size: .88rem; padding: 3px 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.cluster .tab.active { background: var(--used); border-color: var(--used); color: #fff; }
+.cluster .drawer table { font-size: .88rem; }
+.cluster .drawer td.wrap { white-space: normal; max-width: 24rem; }
+.cluster .drawer td.bar, .cluster .drawer th.bar { width: 28%; min-width: 120px; }
+.cluster .drawer td.bar i { display: block; height: 10px; background: var(--used); border-radius: 2px; }

@@ -45,6 +45,7 @@ class Job:
     gpu_util: Optional[float]      # percent, from gres/gpuutil when accounting is on
     timelimit_s: Optional[float]
     exit_code: str
+    nodelist: str = ""
     # Window-dependent fields filled in by select_jobs()
     fraction: float = 1.0          # share of the job's wall time that falls inside the window
     prorated: bool = False
@@ -258,6 +259,7 @@ def _make_job(row, steps) -> Job:
         gpu_util=(sum(gpu_utils) / len(gpu_utils)) if gpu_utils else None,
         timelimit_s=timelimit_s, exit_code=row.get("ExitCode", ""),
         gpu_raw=gpu_raw if parse.gpu_count(alloc_tres) else [],
+        nodelist=row.get("NodeList", ""),
     )
 
 
@@ -454,3 +456,28 @@ def gpu_util_diagnosis(jobs):
         verdict = "gres/gpuutil appears in the step records but could not be parsed; the raw values are shown below."
         fix = "Please report the sample so the parser can be adjusted."
     return {"verdict": verdict, "fix": fix, "job": sample.id, "sample": steps[:4]}
+
+
+def gpu_occupancy(jobs, wstart, wend, now=None):
+    """GPU-hours held inside [wstart, wend] by every job that had GPUs.
+
+    Deliberately independent of the completed-job selection: a GPU was busy
+    for the hours a job held it whether or not that job has finished yet, so
+    running jobs and jobs that ended after the window count for their overlap.
+    Returns {'gpu_hours', 'by_type', 'jobs'}; untyped GPUs are under ''.
+    """
+    now = now or datetime.now()
+    total, by_type, n = 0.0, {}, 0
+    for j in jobs:
+        if not j.gpus or j.start is None:
+            continue
+        jend = j.end if (j.end and j.state != "RUNNING") else now
+        overlap = (min(jend, wend) - max(j.start, wstart)).total_seconds()
+        if overlap <= 0:
+            continue
+        n += 1
+        hours = overlap / 3600
+        total += j.gpus * hours
+        for t, cnt in j.gpu_types.items():
+            by_type[t] = by_type.get(t, 0.0) + cnt * hours
+    return {"gpu_hours": total, "by_type": by_type, "jobs": n}

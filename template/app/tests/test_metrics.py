@@ -280,3 +280,33 @@ def test_gpu_util_diagnosis_no_usage_and_no_steps():
 def test_gpu_util_diagnosis_is_none_when_util_exists(jobs):
     assert metrics.gpu_util_diagnosis(list(jobs.values())) is None            # fixture GPU jobs report 72 and 88
     assert metrics.gpu_util_diagnosis([jobs["1001"]]) is None                 # no GPU jobs at all
+
+
+# ---------- GPU occupancy against available GPU-hours ----------
+
+def test_gpu_occupancy_counts_in_window_overlap_for_all_gpu_jobs(jobs):
+    start, end = _window(24)
+    occ = metrics.gpu_occupancy(list(jobs.values()), start, end, NOW)
+    # 1002: 2 GPUs x 3 h; 1011: 1 GPU x 1 h   (no running GPU jobs in the fixture)
+    assert occ["jobs"] == 2
+    assert occ["gpu_hours"] == pytest.approx(7.0)
+    assert occ["by_type"] == {"a100": pytest.approx(6.0), "h200": pytest.approx(1.0)}
+
+
+def test_gpu_occupancy_clips_to_window_and_includes_running():
+    from datetime import timedelta
+    j = metrics.Job(id="5", raw_id="5", name="n", user="u", account="a", partition="gpu", state="RUNNING",
+                    start=NOW - timedelta(hours=30), end=None, elapsed_s=30 * 3600, alloc_cpus=1, alloc_nodes=1,
+                    cpu_used_s=0, mem_req_b=None, mem_alloc_source=None, mem_used_b=None, mem_source=None,
+                    gpus=4, gpu_types={"": 4}, gpu_util=None, timelimit_s=None, exit_code="")
+    occ = metrics.gpu_occupancy([j], NOW - timedelta(hours=24), NOW, NOW)
+    assert occ["gpu_hours"] == pytest.approx(4 * 24)         # only the 24 h inside the window
+    assert occ["by_type"] == {"": pytest.approx(96.0)}
+
+
+def test_parse_gres_gpus():
+    from jobutil import slurm
+    assert slurm.parse_gres_gpus("gpu:h200:1") == {"h200": 1}
+    assert slurm.parse_gres_gpus("gpu:4(S:0-1)") == {"": 4}
+    assert slurm.parse_gres_gpus("gpu:a100:4,shard:16") == {"a100": 4}
+    assert slurm.parse_gres_gpus("(null)") == {}
