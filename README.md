@@ -112,7 +112,8 @@ Notes for both modes:
 | Allocated memory | `AllocTRES mem=` (total allocated, unambiguous); else `ReqMem` with the `n`/`c` suffixes of older Slurm | job record |
 | GPU-hours | `gres/gpu in AllocTRES × elapsed` | job record |
 | GPU type | typed TRES `gres/gpu:<type>=N`; any remainder vs `gres/gpu` is "untyped" | job record |
-| GPU utilization | mean over steps of `gres/gpuutil` from `TRESUsageInAve` (else `…Max`, else `…Tot` for single-task steps); typed keys accepted | only when slurmdbd tracks `gres/gpuutil` |
+| GPU occupancy | GPU-hours held by every job that had GPUs during the window (running jobs included, clipped to the window) ÷ (GPUs listed by `sinfo -N` × window hours), cluster-wide or for the chosen partition, split by GPU type | `sacct` + `sinfo` |
+| GPU device utilization | mean over steps of `gres/gpuutil` from `TRESUsageInAve` (else `…Max`, else `…Tot` for single-task steps); typed keys accepted | only when slurmdbd tracks `gres/gpuutil` |
 | Wall-time use | `ElapsedRaw / (TimelimitRaw × 60)` | job record |
 | CPU-/node-/GiB-hours | allocation × elapsed (× in-window fraction when prorating) | job record |
 | Cluster capacity | `sreport cluster utilization -t Seconds` (cpu and gres/gpu) | slurmdbd hourly roll-ups |
@@ -150,6 +151,33 @@ job IDs in the tooltip. Without Chart.js the bins render as buttons and work
 the same way. Note that the table holds at most `max_jobs_in_table` jobs
 while the histogram counts all of them, so on very large windows a bin can
 show more jobs than the drill-down lists.
+
+## Drilling into the cluster-wide capacity bars
+
+Each segment of the sreport bars (allocated, idle, planned/reserved, down)
+is clickable and opens a drawer under the bar. sreport itself only knows
+totals per TRES, so the drawer joins two other sources: every job that held
+the TRES during the window (`sacct -a`, with each job's `NodeList`) and the
+node inventory (`sinfo -N`: partitions, GRES types, features, cores, state).
+
+| Segment | What the drawer shows |
+|---|---|
+| allocated | hours by **partition**, **GPU type**, **node feature set**, **user** or **account** (tabs), with each group's share, its capacity and used-of-capacity where a capacity exists |
+| idle | capacity minus allocated by partition, GPU type or feature set |
+| down | nodes that are down or drained *right now*, with state, reason, cores/GPUs, partitions and features |
+| planned | current and upcoming reservations from `scontrol show reservations` |
+
+Details worth knowing: a node is grouped by its full feature set
+(`a100,epyc,ib`), multi-node jobs are split evenly across their nodes, and a
+job whose GPUs are untyped in `AllocTRES` is assigned the type of the node it
+ran on when that node carries a single type. For a typed TRES bar
+(`gres/gpu:h200`) the breakdown is restricted to that type. For the CPU bar
+the "GPU type" tab means cores on nodes carrying that GPU type. Because the
+drawer uses exact job times and today's inventory while sreport uses hourly
+roll-ups and historical downtime, its totals differ slightly from the bar;
+the drawer prints both. Down nodes and reservations are current, not
+historical. The `sacct -a` result is cached for two minutes so switching tabs
+and segments is instant.
 
 ## Optimization hints
 
@@ -220,6 +248,18 @@ Other disclaimers the app raises automatically:
   under-reported.
 * **No memory measurement** — jobs with no steps (e.g. plain `salloc`), or
   clusters without `JobAcctGatherType`, report no usage.
+* **GPU occupancy vs device utilization** — occupancy answers "what share
+  of the GPU-hours that existed were held by jobs" and needs nothing beyond
+  sacct and sinfo, so it is always available. It counts a GPU as used for
+  every hour a job held it, even if the device was idle inside the job; only
+  `gres/gpuutil` can see that, which is why both rows are shown when the
+  latter exists. The capacity comes from the GPUs sinfo lists *now* times the
+  hours in the window, so GPUs that were down or drained during the window
+  are not subtracted (the sreport cluster panel does subtract them), and a
+  GPU removed from the cluster since the jobs ran can push the ratio above
+  100%, which is flagged. `gpu_total` in `config.yml` overrides the count
+  when sinfo is unavailable. In the partition view the partition's own GPUs
+  are the denominator; a partition with no GPUs falls back to the cluster.
 * **GPU utilization unavailable** — when no GPU job in the window has a
   `gres/gpuutil` value, the app inspects one job's raw `TRESUsageIn*` step
   fields and says which case applies: no step records (salloc without srun),
@@ -241,7 +281,7 @@ Other disclaimers the app raises automatically:
 |---|---|---|
 | `cluster_name` | `""` | shown in the header |
 | `cluster` | unset | passed as `-M` to Slurm commands |
-| `sacct`, `sreport`, `sinfo` | command names | full paths if not on the PUN's PATH |
+| `sacct`, `sreport`, `sinfo`, `scontrol` | command names | full paths if not on the PATH |
 | `command_timeout` | 120 | seconds before a Slurm command is abandoned |
 | `default_hours` | 24 | initial window |
 | `max_days` | 92 | longest custom range (protects slurmdbd) |
@@ -250,6 +290,7 @@ Other disclaimers the app raises automatically:
 | `dashboard_url` | `/pun/sys/dashboard` | back link |
 | `cluster_tres` | `[cpu, gres/gpu]` | TRES for the sreport capacity panel; add typed GPUs like `gres/gpu:h200` |
 | `hints` | true | show optimization hints and per-job hint tags |
+| `gpu_total` | unset | GPU count for occupancy when sinfo cannot be run |
 
 ## API
 
@@ -258,8 +299,10 @@ In Batch Connect mode they require the session cookie from `POST /login`.
 
 * `GET api/jobs?scope=mine|all|partition&partition=…&mode=ended|prorate&states=finished|completed|unsuccessful&running=0|1`
   → `window`, `summary`, `info` (boundary counters), `by_partition`, `by_user`,
-  `by_account`, `by_gpu_type`, `jobs[]` (each with `gpu_type` and `hints[]`), `advice[]`, `warnings[]`
+  `by_account`, `by_gpu_type`, `jobs[]` (each with `gpu_type` and `hints[]`), `advice[]`,
+  `gpu_capacity` (occupancy: held, available, ratio, by type), `gpu_util_diagnosis`, `warnings[]`
 * `GET api/cluster` → sreport totals per TRES
+* `GET api/capacity_breakdown?tres=cpu|gres/gpu|gres/gpu:<type>` → `groups` per dimension, `down_nodes`, `reservations`
 * `GET api/partitions`
 
 Inputs are validated (`^[A-Za-z0-9_.@+-]{1,64}$` for names) and commands run
